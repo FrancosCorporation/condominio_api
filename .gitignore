@@ -8,3 +8,10 @@ db
 /db
 Settings.cs
 appsettings.json
+[Bb]in/
+[Oo]bj/
+.vs/
+*.user
+*.suo
+TestResults/
+.idea/
