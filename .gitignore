@@ -6,7 +6,6 @@ Properties
 obj
 db
 /db
-Settings.cs
 appsettings.json
 [Bb]in/
 [Oo]bj/
