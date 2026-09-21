@@ -1,5 +1,27 @@
 # condominio_api
 
+## 🐳 Instalação e Execução (Docker) — recomendado
+
+### Pré-requisitos
+- [Docker](https://docs.docker.com/get-docker/) + Docker Compose
+
+### Rodar com Docker
+```bash
+docker compose up --build
+```
+```bash
+docker run --rm -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 dotnet run
+```
+Env vars: CONDOMINIO_JWT_SECRET, JUNO_RESOURCE_TOKEN, JUNO_AUTHORIZATION, JUNO_PLAN_ID
+
+### Sem Docker (local)
+```bash
+# Requer .NET SDK
+export CONDOMINIO_JWT_SECRET='sua-chave'
+dotnet build
+dotnet run
+```
+
 API REST multi-tenant para gestão de condomínios: cadastro de condomínios, porteiros e moradores, comunicados, agendamento de áreas comuns, confirmação de e-mail e cobrança recorrente da assinatura via Juno.
 
 ![C#](https://img.shields.io/badge/C%23-239120?style=flat-square&logo=csharp&logoColor=white)
