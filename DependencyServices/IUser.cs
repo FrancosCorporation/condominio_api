@@ -4,6 +4,7 @@ using System;
 using Microsoft.AspNetCore.Http;
 using MongoDB.Driver;
 using Newtonsoft.Json.Linq;
+using System.Threading.Tasks;
 
 namespace condominio_api.DependencyService
 {
@@ -18,14 +19,16 @@ namespace condominio_api.DependencyService
         bool VerificarSenha<TUser>(IMongoCollection<TUser> users, TUser user, string password)
             where TUser : UserGeneric;
         string GenerateToken(UserGenericLogin user, double horas);
+        string GenerateEmailToken(UserGenericLogin user, string purpose);
         Boolean ValidateToken(HttpRequest request);
         JObject UnGenereteToken(HttpRequest request);
+        bool TryConsumeEmailToken(string token, string expectedPurpose, out JObject claims);
         string RemoverCaracterEspecial(string str);
         string RemoverCaracterEspecialDeixarEspaco(string str);
         string RemoverBarraToken(string str);
-        void SendEmail(ConstrucaoEmail email);
-        void EmailConfimacao(UserGenericLogin user);
-        void EmailDeRedefinicaoDeSenha(UserGenericLogin user);
+        Task<bool> SendEmailAsync(ConstrucaoEmail email);
+        Task<bool> EmailConfimacaoAsync(UserGenericLogin user);
+        Task<bool> EmailDeRedefinicaoDeSenhaAsync(UserGenericLogin user);
         UserAdm RetornaUserAdmPorId(string nameCondominio, string id);
         BsonDocument GetBson(String nameDatabase, String nameitem, String nameCollection);
         void GravaUserAdm(UserAdm user);

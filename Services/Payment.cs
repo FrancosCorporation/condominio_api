@@ -1,127 +1,127 @@
-using Microsoft.AspNetCore.Mvc;
-using RestSharp;
-using Newtonsoft.Json;
-using System.Collections.Generic;
-using condominio_api.Models;
-using System.Net;
 using System;
-using Microsoft.AspNetCore.Http;
+using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Linq;
 using condominio_api.DependencyService;
+using condominio_api.Models;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
 
 namespace condominio_api.Services
 {
     public class PaymentService : ControllerBase, IPaymentService
     {
-        //Access token
-        //Gerar id card
-        //Verificar plano
-        //Assinar plano
-        private readonly IUserService _userSevice;
+        private static readonly HttpClient JunoHttpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+
+        private readonly IUserService _userService;
+        private JunoAccessToken _validateAccessToken =
+            new JunoAccessToken { dateTimeGenerateAccessToken = new DateTime(1970, 1, 1) };
 
         public PaymentService(IUserService userService)
         {
-            _userSevice = userService;
+            _userService = userService;
         }
-
-        private JunoAccessToken _validateAccessToken = new JunoAccessToken() { dateTimeGenerateAccessToken = new DateTime(1970) };
-
-        private string _baseUrl = "https://sandbox.boletobancario.com";
 
         public bool isTokenExpiration()
         {
-            if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - _validateAccessToken.dateTimeGenerateAccessToken.ToUnixTimeSeconds() > 3600) return true;
-            return false;
+            return DateTimeOffset.UtcNow - _validateAccessToken.dateTimeGenerateAccessToken >
+                TimeSpan.FromHours(1);
         }
 
         public ActionResult Payment(string cardHash, HttpRequest request)
         {
-            dynamic _modelJuno;
-
-            dynamic _getAccessToken = getAccessToken();
-            _modelJuno = _getAccessToken;
-
-            if (!(_modelJuno is JunoError))
+            dynamic modelJuno = getAccessToken();
+            if (modelJuno is not JunoError)
             {
-                dynamic _tokenizacao = tokenizacao(cardHash, _getAccessToken);
-                _modelJuno = _tokenizacao;
+                JunoAccessToken accessToken = (JunoAccessToken)modelJuno;
+                dynamic tokenizationResult = tokenizacao(cardHash, accessToken);
+                modelJuno = tokenizationResult;
 
-                if (!(_modelJuno is JunoError))
-                {
-                    dynamic _subscription = subscription(request, _getAccessToken, _tokenizacao);
-                    _modelJuno = _subscription;
-                }
+                if (modelJuno is not JunoError)
+                    modelJuno = subscription(request, accessToken, (JunoTokenizacao)tokenizationResult);
             }
 
-            return modelResponse(_modelJuno);
+            return modelResponse(modelJuno);
         }
 
         public dynamic getAccessToken()
         {
-            if (isTokenExpiration())
-            {
-                var client = new RestClient($"{_baseUrl}/authorization-server/oauth/token");
-                var request = new RestRequest(Method.POST);
-                request.AddHeader("Content-Type", "application/x-www-form-urlencoded");
-                request.AddHeader("Authorization", Settings.Authorization );
-                request.AddParameter("grant_type", "client_credentials");
+            if (!isTokenExpiration())
+                return _validateAccessToken;
 
-                IRestResponse response = client.Execute(request);
-                if (response.StatusCode == HttpStatusCode.OK)
-                {
-                    JunoAccessToken _junoAccessToken = JsonConvert.DeserializeObject<JunoAccessToken>(response.Content);
-                    _junoAccessToken.dateTimeGenerateAccessToken = DateTimeOffset.UtcNow;
-                    _validateAccessToken = _junoAccessToken;
-                    return _junoAccessToken;
-                }
-                JunoError _junoError = JsonConvert.DeserializeObject<JunoError>(response.Content);
-                return _junoError;
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{Settings.JunoBaseUrl.TrimEnd('/')}/authorization-server/oauth/token");
+            request.Headers.TryAddWithoutValidation("Authorization", Settings.Authorization);
+            request.Content = new FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("grant_type", "client_credentials")
+            });
+
+            using HttpResponseMessage response = JunoHttpClient.Send(request);
+            string content = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            if (response.StatusCode == HttpStatusCode.OK)
+            {
+                JunoAccessToken accessToken = JsonConvert.DeserializeObject<JunoAccessToken>(content);
+                if (accessToken == null || string.IsNullOrWhiteSpace(accessToken.access_token))
+                    throw new InvalidOperationException("A resposta da Juno não contém um token de acesso.");
+                accessToken.dateTimeGenerateAccessToken = DateTimeOffset.UtcNow;
+                _validateAccessToken = accessToken;
+                return accessToken;
             }
-            return _validateAccessToken;
+
+            return JsonConvert.DeserializeObject<JunoError>(content) ?? new JunoError
+            {
+                status = (int)response.StatusCode
+            };
         }
 
         public dynamic tokenizacao(string cardHash, JunoAccessToken junoAccessToken)
         {
-            var client = new RestClient($"{_baseUrl}/api-integration/credit-cards/tokenization");
-            var request = new RestRequest(Method.POST);
-            request.AddHeaders(new Dictionary<string, string>() {
-                {"Authorization", $"Bearer {junoAccessToken.access_token}"},
-                {"X-Api-Version", "2"},
-                {"X-Resource-Token", Settings.Token},
-                {"Content-Type", "application/json;charset=UTF-8"}
-            });
-            request.AddJsonBody(new { creditCardHash = cardHash });
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{Settings.JunoBaseUrl.TrimEnd('/')}/api-integration/credit-cards/tokenization");
+            AddJunoHeaders(request, junoAccessToken.access_token);
+            request.Content = JsonContent(new { creditCardHash = cardHash });
 
-            IRestResponse response = client.Execute(request);
-
+            using HttpResponseMessage response = JunoHttpClient.Send(request);
+            string content = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
             if (response.StatusCode == HttpStatusCode.OK)
+                return JsonConvert.DeserializeObject<JunoTokenizacao>(content);
+
+            return JsonConvert.DeserializeObject<JunoError>(content) ?? new JunoError
             {
-                JunoTokenizacao _junoTokenizacao = JsonConvert.DeserializeObject<JunoTokenizacao>(response.Content);
-                return _junoTokenizacao;
-            }
-            JunoError _junoError = JsonConvert.DeserializeObject<JunoError>(response.Content);
-            return _junoError;
+                status = (int)response.StatusCode
+            };
         }
 
-        public dynamic subscription(HttpRequest requestUser, JunoAccessToken junoAccessToken, JunoTokenizacao junoTokenizacao)
+        public dynamic subscription(
+            HttpRequest requestUser,
+            JunoAccessToken junoAccessToken,
+            JunoTokenizacao junoTokenizacao)
         {
-            UserAdm user = _userSevice.RetornaUserAdmPorId(_userSevice.UnGenereteToken(requestUser)["nameCondominio"].ToString(), _userSevice.UnGenereteToken(requestUser)["objectId"].ToString());
+            var claims = _userService.UnGenereteToken(requestUser);
+            UserAdm user = _userService.RetornaUserAdmPorId(
+                claims["nameCondominio"].ToString(),
+                claims["objectId"].ToString());
+            if (user == null)
+                return NotFound(new { message = "Administrador não encontrado." });
             user.creditCardId = junoTokenizacao.creditCardId;
-            var client = new RestClient($"{_baseUrl}/api-integration/subscriptions");
-            var request = new RestRequest(Method.POST);
-            request.AddHeaders(new Dictionary<string, string>() {
-                {"Authorization", $"Bearer {junoAccessToken.access_token}"},
-                {"X-Api-Version", "2"},
-                {"X-Resource-Token", Settings.Token},
-                {"Content-Type", "application/json;charset=UTF-8"}
-            });
-            request.AddJsonBody(new
+
+            var subscriptionRequest = new
             {
                 dueDay = DateTime.Now.Day,
                 planId = Settings.PlanId,
                 chargeDescription = "Inscrição plano Condominio",
                 creditCardDetails = new
                 {
-                    creditCardId = junoTokenizacao.creditCardId,
+                    creditCardId = junoTokenizacao.creditCardId
                 },
                 billing = new
                 {
@@ -135,27 +135,37 @@ namespace condominio_api.Services
                         city = user.cidade,
                         state = user.estado,
                         postCode = user.cep
-                    },
+                    }
                 }
-            });
+            };
 
-            IRestResponse response = client.Execute(request);
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{Settings.JunoBaseUrl.TrimEnd('/')}/api-integration/subscriptions");
+            AddJunoHeaders(request, junoAccessToken.access_token);
+            request.Content = JsonContent(subscriptionRequest);
 
+            using HttpResponseMessage response = JunoHttpClient.Send(request);
+            string content = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
             if (response.StatusCode == HttpStatusCode.OK)
             {
-                JunoSubscription _junoSubscription = JsonConvert.DeserializeObject<JunoSubscription>(response.Content);
-                user.idSubscription = _junoSubscription.id;
-                _userSevice.GravaUserAdm(user);
-                return _junoSubscription;
+                JunoSubscription junoSubscription = JsonConvert.DeserializeObject<JunoSubscription>(content);
+                if (junoSubscription == null || string.IsNullOrWhiteSpace(junoSubscription.id))
+                    throw new InvalidOperationException("A resposta da Juno não contém uma assinatura válida.");
+                user.idSubscription = junoSubscription.id;
+                _userService.GravaUserAdm(user);
+                return junoSubscription;
             }
-            JunoError _junoError = JsonConvert.DeserializeObject<JunoError>(response.Content);
-            return _junoError;
 
+            return JsonConvert.DeserializeObject<JunoError>(content) ?? new JunoError
+            {
+                status = (int)response.StatusCode
+            };
         }
 
         public ActionResult modelResponse(dynamic modelJuno)
         {
-            switch (modelJuno.status)
+            switch ((int)modelJuno.status)
             {
                 case 400:
                     return BadRequest(modelJuno);
@@ -164,33 +174,56 @@ namespace condominio_api.Services
                 case 403:
                     return Forbid(modelJuno.details[0].message);
                 case 500:
-                    return Problem(modelJuno.details[0].message);
+                    return Problem((string)modelJuno.details[0].message);
                 default:
                     return Ok(modelJuno);
             }
         }
 
-        public ActionResult consultCharges()
+        public ActionResult consultCharges(HttpRequest requestUser)
         {
-            dynamic _getAccessToken = getAccessToken();
+            var claims = _userService.UnGenereteToken(requestUser);
+            UserAdm user = _userService.RetornaUserAdmPorId(
+                claims["nameCondominio"].ToString(),
+                claims["objectId"].ToString());
+            if (user == null || string.IsNullOrWhiteSpace(user.idSubscription))
+                return NotFound(new { message = "Assinatura não encontrada para este condomínio." });
 
-            var client = new RestClient($"{_baseUrl}/api-integration/charges");
-            var request = new RestRequest(Method.GET);
-            request.AddHeaders(new Dictionary<string, string>() {
-                {"Authorization", $"Bearer {_getAccessToken.access_token}"},
-                {"X-Api-Version", "2"},
-                {"X-Resource-Token", Settings.Token},
-                {"Content-Type", "application/json;charset=UTF-8"}
-            });
+            dynamic accessTokenResponse = getAccessToken();
+            if (accessTokenResponse is JunoError accessTokenError)
+                return StatusCode(accessTokenError.status, accessTokenError);
 
-            IRestResponse response = client.Execute(request);
+            JunoAccessToken accessToken = (JunoAccessToken)accessTokenResponse;
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"{Settings.JunoBaseUrl.TrimEnd('/')}/api-integration/charges");
+            AddJunoHeaders(request, accessToken.access_token);
 
-            JunoEmbedded _junoEmbedded = JsonConvert.DeserializeObject<JunoEmbedded>(response.Content);
-            JunoCharges _junoCharges = _junoEmbedded._embedded;
+            using HttpResponseMessage response = JunoHttpClient.Send(request);
+            string content = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            if (!response.IsSuccessStatusCode)
+                return StatusCode((int)response.StatusCode, JsonConvert.DeserializeObject<JunoError>(content));
 
-            return Ok(_junoCharges);
-
+            JunoEmbedded responseModel = JsonConvert.DeserializeObject<JunoEmbedded>(content);
+            List<JunoCharge> tenantCharges = (responseModel?._embedded?.charges ?? new List<JunoCharge>())
+                .Where(charge => charge?.subscription?.id == user.idSubscription)
+                .ToList();
+            return Ok(tenantCharges);
         }
 
+        private static void AddJunoHeaders(HttpRequestMessage request, string accessToken)
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
+            request.Headers.TryAddWithoutValidation("X-Api-Version", "2");
+            request.Headers.TryAddWithoutValidation("X-Resource-Token", Settings.Token);
+        }
+
+        private static StringContent JsonContent(object body)
+        {
+            return new StringContent(
+                JsonConvert.SerializeObject(body),
+                Encoding.UTF8,
+                "application/json");
+        }
     }
 }

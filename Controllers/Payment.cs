@@ -21,7 +21,8 @@ namespace condominio_api.Controllers
         public ActionResult<dynamic> payment([FromForm] [Required] string cardHash) => _paymentService.Payment(cardHash,Request);
 
         [HttpGet("Consult")]
-        public ActionResult<dynamic> consult() => _paymentService.consultCharges();
+        [Authorize(Roles = "Administrator")]
+        public ActionResult<dynamic> consult() => _paymentService.consultCharges(Request);
 
     }
 }

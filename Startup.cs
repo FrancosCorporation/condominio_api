@@ -16,9 +16,10 @@ namespace condominio_api
 {
     public class Startup
     {
-        public Startup(IConfiguration configuration)
+        public Startup(IConfiguration configuration, IWebHostEnvironment environment)
         {
             Configuration = configuration;
+            Settings.ValidateForEnvironment(environment.IsProduction());
             Console.Write("\nDate Up Server :" + DateTime.UtcNow+ "\n"+"\n");
         }
         
@@ -29,11 +30,11 @@ namespace condominio_api
         public void ConfigureServices(IServiceCollection services)
         {
 
-            services.AddCors(options => {
-                options.AddDefaultPolicy(builder => {
-                    builder.AllowAnyOrigin();
-                });
-            });
+            services.AddCors(options =>
+                options.AddPolicy(MyAllowSpecificOrigins, builder =>
+                    builder.WithOrigins(Settings.AllowedOrigins)
+                        .AllowAnyHeader()
+                        .AllowAnyMethod()));
 
             //Configurando o acesso ao MongoDb
             services.Configure<CondominioDatabaseSetting>(
@@ -52,7 +53,7 @@ namespace condominio_api
             services.AddControllers();
 
             //Adiciona o servico de autenticacao atraves do JsonWebToken
-            var key = Encoding.ASCII.GetBytes(Settings.Secret);
+            var key = Encoding.UTF8.GetBytes(Settings.Secret);
             services.AddAuthentication(x => 
             {
                 x.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -65,6 +66,9 @@ namespace condominio_api
                 {
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey = new SymmetricSecurityKey(key),
+                    ValidateLifetime = true,
+                    ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha256 },
+                    ClockSkew = TimeSpan.FromSeconds(30),
                     ValidateIssuer = false,
                     ValidateAudience = false
                 };
@@ -76,8 +80,6 @@ namespace condominio_api
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
         {
 
-            app.UseCors(MyAllowSpecificOrigins);
-
             if (env.IsDevelopment())
             {
                 app.UseDeveloperExceptionPage();
@@ -87,6 +89,7 @@ namespace condominio_api
 
             app.UseRouting();
 
+            app.UseCors(MyAllowSpecificOrigins);
             app.UseAuthentication();
             app.UseAuthorization();
 

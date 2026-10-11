@@ -12,6 +12,6 @@ namespace condominio_api.DependencyService
         dynamic tokenizacao(string cardHash, JunoAccessToken junoAccessToken);
         dynamic subscription(HttpRequest requestUser, JunoAccessToken junoAccessToken, JunoTokenizacao junoTokenizacao);
         ActionResult modelResponse(dynamic modelJuno);
-        ActionResult consultCharges();
+        ActionResult consultCharges(HttpRequest requestUser);
     }
 }

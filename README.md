@@ -1,129 +1,75 @@
 # condominio_api
 
-## 🐳 Instalação e Execução (Docker) — recomendado
+API REST para gestão multi-tenant de condomínios. Cada condomínio usa um database próprio no
+MongoDB. O serviço oferece cadastro e autenticação de administradores, porteiros e moradores,
+comunicados, agendamento de áreas comuns e cobrança recorrente via Juno.
 
-### Pré-requisitos
-- [Docker](https://docs.docker.com/get-docker/) + Docker Compose
+## Requisitos
 
-### Rodar com Docker
-```bash
-docker compose up --build
-```
-```bash
-docker run --rm -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 dotnet run
-```
-Env vars: CONDOMINIO_JWT_SECRET, JUNO_RESOURCE_TOKEN, JUNO_AUTHORIZATION, JUNO_PLAN_ID
+- .NET SDK 10
+- MongoDB acessível pela API
+- Credenciais Juno para fluxos de assinatura
+- SMTP configurado para confirmação e redefinição de senha
 
-### Sem Docker (local)
-```bash
-# Requer .NET SDK
-export CONDOMINIO_JWT_SECRET='sua-chave'
-dotnet build
-dotnet run
-```
+## Configuração
 
-API REST multi-tenant para gestão de condomínios: cadastro de condomínios, porteiros e moradores, comunicados, agendamento de áreas comuns, confirmação de e-mail e cobrança recorrente da assinatura via Juno.
+Copie .env.example para .env e preencha os valores. O .NET não carrega .env automaticamente:
+exporte as variáveis no processo ou configure-as no ambiente do serviço/container. Não versione
+.env nem inclua credenciais em appsettings*.json.
 
-![C#](https://img.shields.io/badge/C%23-239120?style=flat-square&logo=csharp&logoColor=white)
-![.NET](https://img.shields.io/badge/.NET-5.0-512BD4?style=flat-square&logo=dotnet&logoColor=white)
-![MongoDB](https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
-![Status](https://img.shields.io/badge/status-em%20desenvolvimento-yellow?style=flat-square)
+As opções MongoDB também podem ser fornecidas pelo sistema de configuração do ASP.NET Core:
 
-## Sobre
+~~~text
+CondominioDatabaseSetting__ConnectionString=mongodb://usuario:senha@host:27017
+CondominioDatabaseSetting__DatabaseName=Condominios
+~~~
 
-Backend de um sistema de automação condominial, pensado para síndicos/administradoras e aplicativos de morador e porteiro. O projeto resolve o dia a dia do condomínio em um único serviço:
+CONDOMINIO_JWT_SECRET deve conter pelo menos 32 bytes UTF-8. Em produção, configure também
+APP_BASE_URL, ALLOWED_ORIGINS, as credenciais SMTP e as credenciais e URL de produção da Juno.
+A aplicação rejeita configuração incompleta ou uma URL da Juno que ainda aponte para sandbox.
 
-- **Multi-tenant por banco de dados**: cada condomínio cadastrado ganha um banco próprio no MongoDB, com coleções isoladas para administrador, porteiros, moradores, avisos, configuração de agendamentos e histórico de pagamento.
-- **Autenticação JWT com papéis** (`Administrator`, `Porteiro`, `Morador`) controlando o acesso a cada rota.
-- **Monetização por assinatura**: integração com o gateway de pagamentos **Juno** (tokenização de cartão, criação de assinatura e consulta de cobranças) com um *hosted service* que verifica periodicamente se a mensalidade do condomínio está em dia.
+ALLOWED_ORIGINS aceita origens HTTP/HTTPS separadas por ponto e vírgula, sem caminhos, por exemplo:
+https://painel.exemplo.com;https://app.exemplo.com. Não use *.
 
-## Funcionalidades
+## Executar
 
-Comprovadas pelo código em `Controllers/` e `Services/`:
+~~~bash
+dotnet restore
+dotnet run --project condominio_api.csproj
+~~~
 
-- Cadastro de condomínio (`POST /api/cadastroCondominio`) com validação de CNPJ, criação automática do banco/coleções e envio de e-mail de confirmação.
-- Login de administrador (`POST /api/loginCondominio`) e de morador (`POST /app/loginMorador`) com emissão de token JWT.
-- Cadastro de porteiro (`POST /api/cadastroPorteiro`) e de morador (`POST /api/cadastroMorador`) restritos ao papel `Administrator`.
-- Listagem dos condomínios cadastrados (`GET /app/listacondominios`).
-- Comunicados: cadastro pelo admin (`POST /api/cadastroComunicado`) e leitura por qualquer papel autenticado (`GET /api/comunicados`).
-- Agendamento de áreas comuns: criação/edição da configuração pelo admin (`POST /api/criarAgendamento`, `PUT /api/editAgendamento`), solicitação pelo morador (`POST /app/agendar`), listagens e consulta de configuração (`GET /api/listaAgendamentos`, `GET /api/listaItensAgendamentos`, `GET /api/configAgendamentos`).
-- Edição da foto de perfil do usuário autenticado (`POST /api/editFoto`), com verificação de e-mail confirmado e pagamento em dia.
-- Confirmação de e-mail por token (`GET /api/confirmacaoEmail`, `POST /api/EmailNaoConfirmado`) e redefinição/alteração de senha (`POST /api/esqueciMinhaSenha`, `GET /api/recuperarSenhaCondominio`, `PUT /api/alterarSenha`).
-- Assinatura e cobrança: `POST /subscription` tokeniza o cartão e cria a assinatura na Juno; `GET /subscription/Consult` lista as cobranças; `Services/CheckPayment.cs` roda como `IHostedService` e grava o histórico de pagamento, atualizando o campo `isPayment` do condomínio.
-- Senhas armazenadas com hash SHA-256 e envio de e-mails transacionais via SMTP.
+Para um build de publicação:
 
-## Stack
+~~~bash
+dotnet publish condominio_api.csproj --configuration Release --output publish
+~~~
 
-- **Linguagem/framework**: C# com ASP.NET Core 5.0 (Web API)
-- **Banco de dados**: MongoDB (`MongoDB.Driver` 2.12.1), um banco por condomínio
-- **Autenticação**: JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`), com pacotes de Identity/OpenIdConnect referenciados
-- **Pagamentos**: Juno — `RestSharp` 106.11.7 + `Newtonsoft.Json`
-- **Validação**: `Atividio.Validadores.Cnpj`
-- **E-mail**: `System.Net.Mail` (SMTP Gmail)
+Os templates de e-mail são copiados para a saída de build e publicação. Este repositório não contém
+Dockerfile nem arquivo Compose.
 
-## Como rodar
+## Operação
 
-Requer configuração de ambiente. Não há `appsettings.json` nem `Settings.cs` versionados (ambos estão no `.gitignore`, pois guardam credenciais), então o projeto **não compila sem criá-los** na raiz:
+- PAYMENT_CHECK_MINUTES controla a conciliação Juno; o padrão e o mínimo são 15 minutos, e o máximo
+  é 1440. O primeiro ciclo começa logo após a inicialização.
+- O ciclo ignora o acesso à Juno quando não há assinatura cadastrada, consulta as cobranças uma vez
+  por ciclo e registra falhas no log. Uma falha não cancela o próximo ciclo.
+- JUNO_BASE_URL seleciona o ambiente da integração. Desenvolvimento usa sandbox por padrão;
+  produção exige uma URL explícita e rejeita sandbox.
+- Os links de confirmação de e-mail e redefinição de senha expiram em 30 minutos e só podem ser
+  usados uma vez.
+- Senhas BCrypt12 são usadas para novos cadastros. Senhas legadas SHA-256 são atualizadas para
+  BCrypt no próximo login válido.
 
-1. Instale o [.NET 5 SDK](https://dotnet.microsoft.com/download/dotnet/5.0).
-2. Crie o arquivo `Settings.cs` com a classe estática `Settings` usada em `Startup.cs`, `Services/Payment.cs`, `Services/User.cs` e `Services/CheckPayment.cs`:
+## Verificação e CI
 
-   ```csharp
-   namespace condominio_api
-   {
-       public static class Settings
-       {
-           public static string Secret = "<chave-jwt>";
-           public static string Authorization = "<client_credentials-base64-da-juno>";
-           public static string Token = "<resource-token-da-juno>";
-           public static string PlanId = "<id-do-plano-juno>";
-       }
-   }
-   ```
+O workflow GitHub Actions restaura dependências, compila em Release com warnings como erros e falha
+se a auditoria NuGet encontrar dependências vulneráveis. Atualmente o repositório não possui projeto
+de testes automatizados.
 
-3. Crie o `appsettings.json` com a seção lida por `Models/CondominioDatabaseSetting.cs`:
+## Segurança
 
-   ```json
-   {
-     "CondominioDatabaseSetting": {
-       "ConnectionString": "mongodb://usuario:senha@host:27017",
-       "DatabaseName": "Condominios"
-     }
-   }
-   ```
-
-4. Restaure e execute:
-
-   ```bash
-   dotnet restore
-   dotnet run
-   ```
-
-Observações: o serviço espera um MongoDB acessível; a integração de pagamento aponta para o sandbox da Juno (`https://sandbox.boletobancario.com`) e o `CheckPayment` consulta cobranças a cada 2 segundos. As URLs de e-mail e o caminho do template HTML (`Templates/confirmed.html`) estão fixos no código.
-
-## Estrutura do projeto
-
-```
-condominio_api/
-├── Controllers/            # Rotas HTTP: app do morador, painel do síndico e assinatura
-│   ├── CondominioApp.cs
-│   ├── CondominioSite.cs
-│   └── Payment.cs
-├── DependencyServices/     # Interfaces de injeção de dependência (IUserService, IPaymentService)
-├── Models/                 # Entidades do domínio e modelos de resposta da Juno (Models/Juno)
-├── Services/               # Regras de negócio, acesso ao Mongo, e-mail e pagamentos
-│   ├── CheckPayment.cs     # IHostedService que sincroniza o status de pagamento
-│   ├── Condominio.cs
-│   ├── Payment.cs
-│   └── User.cs
-├── Templates/              # Template HTML do e-mail de confirmação
-├── Properties/             # launchSettings.json
-├── Program.cs
-├── Startup.cs
-└── condominio_api.csproj
-```
+Consulte SECURITY.md para o processo de reporte e as regras de isolamento e cobrança.
 
 ## Licença
 
-Distribuído sob a licença MIT. Veja [LICENSE](LICENSE).
+MIT. Consulte LICENSE.

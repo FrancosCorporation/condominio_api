@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
 using Atividio.Validadores.Cnpj;
 using condominio_api.DependencyService;
+using System.Threading.Tasks;
 
 namespace condominio_api.Services
 {
@@ -175,7 +176,7 @@ namespace condominio_api.Services
             }
 
         }
-        public dynamic RegisterCondominio(UserAdm user, HttpRequest request)
+        public async Task<dynamic> RegisterCondominio(UserAdm user, HttpRequest request)
         {
             try
             {
@@ -215,7 +216,9 @@ namespace condominio_api.Services
                             }
                             user.role = "Administrator";
                             user.id = novoAdm["_id"].ToString();
-                            _userService.EmailConfimacao(user);
+                            bool emailSent = await _userService.EmailConfimacaoAsync(user);
+                            if (!emailSent)
+                                return StatusCode(503, "Condomínio cadastrado, mas o e-mail não foi enviado. Solicite um novo link de confirmação.");
                             return Ok("Condominio " + user.nameCondominio + " cadastrado com sucesso!");
                         }
                         else
@@ -458,62 +461,36 @@ namespace condominio_api.Services
             }
 
         }
-        public dynamic EditarSenha(String token, string senha, HttpRequest request)
+        public dynamic EditarSenha(String token, string senha)
         {
-            request.Headers["Authorization"] = "1 " + token;
-            //password para hash
-            string _passwordSHA256 = _userService.passwordToHash(senha);
-            string nameCondominio = _userService.UnGenereteToken(request)["nameCondominio"].ToString();
-            string role = _userService.UnGenereteToken(request)["role"].ToString();
-            string id = _userService.UnGenereteToken(request)["objectId"].ToString();
-            //pego o database  
+            if (!_userService.TryConsumeEmailToken(token, "password_reset", out JObject claims))
+                return Unauthorized("Token inválido, expirado ou já utilizado.");
+
+            string passwordHash = _userService.passwordToHash(senha);
+            string nameCondominio = claims["nameCondominio"]?.ToString();
+            string role = claims["role"]?.ToString();
+            string id = claims["objectId"]?.ToString();
             IMongoDatabase db = _clientMongoDb.GetDatabase(nameCondominio);
-            if (_userService.ValidateToken(request))
-            {
-                if (role == "Administrator")
-                {
-                    string nameCollection = "usersAdm";
-                    BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
-                    BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
-                    novo["password"] = _passwordSHA256;
-                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
-                    //pego a colection                         faço a alteração
-                    db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
-                    return Ok("Senha Alterada");
 
-                }
-                else if (role == "Porteiro")
-                {
-                    string nameCollection = "usersPorteiros";
-                    BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
-                    BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
-                    novo["password"] = _passwordSHA256;
-                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
-                    //pego a colection                         faço a alteração
-                    db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
-                    return Ok("Senha Alterada");
-                }
-                else if (role == "Morador")
-                {
-                    string nameCollection = "usersMoradores";
-                    BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
-                    BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
-                    novo["password"] = _passwordSHA256;
-                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
-                    //pego a colection                         faço a alteração
-                    db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
-                    return Ok("Senha Alterada");
-                }
-                else
-                {
-                    return Unauthorized();
-                }
-
-            }
-            else
+            string nameCollection = role switch
             {
+                "Administrator" => "usersAdm",
+                "Porteiro" => "usersPorteiros",
+                "Morador" => "usersMoradores",
+                _ => null
+            };
+            if (nameCollection == null || string.IsNullOrWhiteSpace(nameCondominio) || string.IsNullOrWhiteSpace(id))
                 return Unauthorized();
-            }
+
+            BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
+            if (old == null)
+                return NotFound("Usuário não encontrado.");
+
+            BsonDocument updated = old.DeepClone().AsBsonDocument;
+            updated["password"] = passwordHash;
+            updated["alg"] = UserGeneric.Bcrypt12Algorithm;
+            db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, updated);
+            return Ok("Senha Alterada");
         }
         public dynamic AlterarSenha(string senha, HttpRequest request)
         {
@@ -572,60 +549,30 @@ namespace condominio_api.Services
                 return Unauthorized();
             }
         }
-        public dynamic ConfirmacaoEmail(String token, HttpRequest request)
+        public dynamic ConfirmacaoEmail(String token)
         {
-            request.Headers["Authorization"] = "1 " + _userService.RemoverBarraToken(token);
+            if (!_userService.TryConsumeEmailToken(token, "email_confirmation", out JObject claims))
+                return Unauthorized("Token inválido, expirado ou já utilizado.");
 
-            if (_userService.ValidateToken(request))
-            {
-                string nameCondominio = _userService.UnGenereteToken(request)["nameCondominio"].ToString();
-                string role = _userService.UnGenereteToken(request)["role"].ToString();
-                string id = _userService.UnGenereteToken(request)["objectId"].ToString();
-                //pego o database  
-                IMongoDatabase db = _clientMongoDb.GetDatabase(nameCondominio);
-                if (role == "Administrator")
-                {
-                    string nameCollection = "usersAdm";
-                    BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
-                    BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
-                    novo["verificado"] = true;
-                    //pego a colection                         faço a alteração
-                    db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
-                    return Ok("Email Confirmado");
-
-                }
-                /*else if (role == "Porteiro")
-                {
-                    string nameCollection = "usersPorteiros";
-                    BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
-                    BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
-                    novo["password"] = _passwordSHA256;
-                    //pego a colection                         faço a alteração
-                    db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
-                    return Ok("Senha Alterada");
-                }
-                else if (role == "Morador")
-                {
-                    string nameCollection = "usersMoradores";
-                    BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
-                    BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
-                    novo["password"] = _passwordSHA256;
-                    //pego a colection                         faço a alteração
-                    db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
-                    return Ok("Senha Alterada");
-                } */
-                else
-                {
-                    return Unauthorized();
-                }
-
-            }
-            else
-            {
+            string nameCondominio = claims["nameCondominio"]?.ToString();
+            string id = claims["objectId"]?.ToString();
+            if (claims["role"]?.ToString() != "Administrator" ||
+                string.IsNullOrWhiteSpace(nameCondominio) ||
+                string.IsNullOrWhiteSpace(id))
                 return Unauthorized();
-            }
+
+            IMongoDatabase db = _clientMongoDb.GetDatabase(nameCondominio);
+            const string nameCollection = "usersAdm";
+            BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
+            if (old == null)
+                return NotFound("Usuário não encontrado.");
+
+            BsonDocument updated = old.DeepClone().AsBsonDocument;
+            updated["verificado"] = true;
+            db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, updated);
+            return Ok("Email Confirmado");
         }
-        public dynamic EmailNaoConfirmado(ConfirmacaoEmail confirm, HttpRequest request)
+        public async Task<dynamic> EmailNaoConfirmado(ConfirmacaoEmail confirm, HttpRequest request)
         {
 
             if (VerificarDatabaseExist(confirm.nameCondominio))
@@ -637,7 +584,9 @@ namespace condominio_api.Services
                     string nameCollection = "usersAdm";
                     IMongoCollection<UserAdm> _users = db.GetCollection<UserAdm>(nameCollection);
                     UserAdm _user = _users.Find(_user => _user.email == confirm.email).ToList()[0];
-                    _userService.EmailConfimacao(_user);
+                    bool emailSent = await _userService.EmailConfimacaoAsync(_user);
+                    if (!emailSent)
+                        return StatusCode(503, "Não foi possível enviar o e-mail de confirmação. Tente novamente.");
                     return Ok("Enviamos novamente um Email de confirmação, (Valido por 30 minutos)");
                 }
                 catch
@@ -652,7 +601,7 @@ namespace condominio_api.Services
             }
 
         }
-        public dynamic RedefinirSenha(RedefinirSenha red, HttpRequest request)
+        public async Task<dynamic> RedefinirSenha(RedefinirSenha red, HttpRequest request)
         {
             if (VerificarDatabaseExist(red.nameCondominio))
             {
@@ -664,8 +613,8 @@ namespace condominio_api.Services
                         string nameCollection = "usersAdm";
                         IMongoCollection<UserAdm> _users = db.GetCollection<UserAdm>(nameCollection);
                         UserAdm _user = _users.Find(_user => _user.email == red.email).ToList()[0];
-                        string _tokenUser = _userService.GenerateToken(_user, _timeExpiredTokenLogin);
-                        _userService.EmailDeRedefinicaoDeSenha(_user);
+                        if (!await _userService.EmailDeRedefinicaoDeSenhaAsync(_user))
+                            return StatusCode(503, "Não foi possível enviar o e-mail de redefinição. Tente novamente.");
                         return Ok("Verique seu email (Valido por 30 minutos)");
                     }
                     catch
@@ -680,8 +629,8 @@ namespace condominio_api.Services
                         string nameCollection = "usersPorteiros";
                         IMongoCollection<UserAdm> _users = db.GetCollection<UserAdm>(nameCollection);
                         UserAdm _user = _users.Find(_user => _user.email == red.email).ToList()[0];
-                        string _tokenUser = _userService.GenerateToken(_user, _timeExpiredTokenLogin);
-                        _userService.EmailDeRedefinicaoDeSenha(_user);
+                        if (!await _userService.EmailDeRedefinicaoDeSenhaAsync(_user))
+                            return StatusCode(503, "Não foi possível enviar o e-mail de redefinição. Tente novamente.");
                         return Ok("Verique seu email (Valido por 30 minutos)");
                     }
                     catch
@@ -696,8 +645,8 @@ namespace condominio_api.Services
                         string nameCollection = "usersMoradores";
                         IMongoCollection<UserAdm> _users = db.GetCollection<UserAdm>(nameCollection);
                         UserAdm _user = _users.Find(_user => _user.email == red.email).ToList()[0];
-                        string _tokenUser = _userService.GenerateToken(_user, _timeExpiredTokenLogin);
-                        _userService.EmailDeRedefinicaoDeSenha(_user);
+                        if (!await _userService.EmailDeRedefinicaoDeSenhaAsync(_user))
+                            return StatusCode(503, "Não foi possível enviar o e-mail de redefinição. Tente novamente.");
                         return Ok("Verique seu email (Valido por 30 minutos)");
                     }
                     catch

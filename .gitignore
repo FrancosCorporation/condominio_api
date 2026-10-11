@@ -4,6 +4,7 @@ bin
 Properties
 *.mdmp
 obj
+publish/
 db
 /db
 appsettings.json

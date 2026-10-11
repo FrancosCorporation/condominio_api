@@ -15,19 +15,28 @@ using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using condominio_api.DependencyService;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http.Headers;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace condominio_api.Services
 {
     public class UserService : ControllerBase, IUserService
     {
         private readonly MongoClient _clientMongoDb;
-        private string URL = "https://localhost:5001/";
-        private double _timeExpiredTokenEMAIL = 0.5;
+        private readonly IMongoCollection<BsonDocument> _usedEmailTokens;
+        private readonly ILogger<UserService> _logger;
+        private const double EmailTokenLifetimeHours = 0.5;
 
-        public UserService(ICondominioDatabaseSetting setting)
+        public UserService(ICondominioDatabaseSetting setting, ILogger<UserService> logger)
         {
             var client = new MongoClient(setting.ConnectionString);
             _clientMongoDb = client;
+            _logger = logger;
+            _usedEmailTokens = client.GetDatabase("userscondominio")
+                .GetCollection<BsonDocument>("usedEmailTokens");
         }
 
         public BsonDocument RetornaUserAdm(UserAdm user)
@@ -224,17 +233,33 @@ namespace condominio_api.Services
         }
         public string GenerateToken(UserGenericLogin user, double horas)
         {
+            return CreateToken(user, horas, null);
+        }
+
+        public string GenerateEmailToken(UserGenericLogin user, string purpose)
+        {
+            if (purpose != "email_confirmation" && purpose != "password_reset")
+                throw new ArgumentException("Finalidade de token de e-mail inválida.", nameof(purpose));
+            return CreateToken(user, EmailTokenLifetimeHours, purpose);
+        }
+
+        private static string CreateToken(UserGenericLogin user, double horas, string purpose)
+        {
             var tokenHandler = new JwtSecurityTokenHandler();
-            var key = Encoding.ASCII.GetBytes(Settings.Secret);
+            var key = Encoding.UTF8.GetBytes(Settings.Secret);
+            var claims = new List<Claim>
+            {
+                new Claim("objectId", user.id ?? string.Empty),
+                new Claim("nameCondominio", user.nameCondominio ?? string.Empty),
+                new Claim(ClaimTypes.Role, user.role ?? string.Empty),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N"))
+            };
+            if (purpose != null)
+                claims.Add(new Claim("tokenPurpose", purpose));
+
             var tokenDescriptor = new SecurityTokenDescriptor
             {
-                Subject = new ClaimsIdentity(new Claim[]
-                {
-                    new Claim("objectId", user.id.ToString()),
-                    new Claim("nameCondominio", user.nameCondominio.ToString()),
-                    new Claim(ClaimTypes.Role, user.role.ToString()),
-
-                }),
+                Subject = new ClaimsIdentity(claims),
                 Expires = DateTime.UtcNow.AddHours(horas),
                 SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
             };
@@ -243,45 +268,113 @@ namespace condominio_api.Services
         }
         public Boolean ValidateToken(HttpRequest request)
         {
-            string jwtString = request.Headers["Authorization"].ToString().Split(" ")[1];
-            var tokenHandler = new JwtSecurityTokenHandler();
-            SecurityToken validatedToken;
-            TokenValidationParameters validationParameters = new TokenValidationParameters()
-            {
-                ValidateLifetime = true, // Because there is no expiration in the generated token
-                ValidateAudience = false, // Because there is no audiance in the generated token
-                ValidateIssuer = false,   // Because there is no issuer in the generated token
-                ValidIssuer = "Sample",
-                ValidAudience = "Sample",
-                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Settings.Secret)), // The same key as the one that generate the token
-                LifetimeValidator = (DateTime? notBefore, DateTime? expires, SecurityToken securityToken, TokenValidationParameters validationParameters) =>
-                {
-                    if (expires != null)
-                    {
-                        if (DateTime.Now < expires.Value.ToLocalTime()) return true;
-                    }
-                    return false;
-                }
-            };
+            string token = ExtractBearerToken(request);
+            return token != null && TryValidateToken(token, out _, out _);
+        }
+
+        public JObject UnGenereteToken(HttpRequest request)
+        {
+            string token = ExtractBearerToken(request);
+            if (token == null || !TryValidateToken(token, out _, out JwtSecurityToken validatedToken))
+                throw new SecurityTokenException("Token Bearer ausente, inválido ou expirado.");
+
+            return ToClaimsObject(validatedToken);
+        }
+
+        public bool TryConsumeEmailToken(string token, string expectedPurpose, out JObject claims)
+        {
+            claims = null;
+            if (string.IsNullOrWhiteSpace(token) ||
+                !TryValidateToken(token, out _, out JwtSecurityToken validatedToken))
+                return false;
+
+            string purpose = validatedToken.Claims.FirstOrDefault(claim => claim.Type == "tokenPurpose")?.Value;
+            string tokenId = validatedToken.Claims.FirstOrDefault(claim => claim.Type == JwtRegisteredClaimNames.Jti)?.Value;
+            if (purpose != expectedPurpose || string.IsNullOrWhiteSpace(tokenId))
+                return false;
+
+            DateTime now = DateTime.UtcNow;
+            _usedEmailTokens.DeleteMany(
+                Builders<BsonDocument>.Filter.Lte("expiresAt", new BsonDateTime(now.AddMinutes(-1))));
 
             try
             {
-                var p = tokenHandler.ValidateToken(jwtString, validationParameters, out validatedToken);
+                _usedEmailTokens.InsertOne(new BsonDocument
+                {
+                    { "_id", tokenId },
+                    { "expiresAt", new BsonDateTime(validatedToken.ValidTo) }
+                });
+                claims = ToClaimsObject(validatedToken);
                 return true;
             }
-            catch (SecurityTokenException)
+            catch (MongoWriteException exception) when (
+                exception.WriteError?.Category == ServerErrorCategory.DuplicateKey)
             {
                 return false;
             }
-
         }
-        public JObject UnGenereteToken(HttpRequest request)
+
+        private static string ExtractBearerToken(HttpRequest request)
         {
-            string jwtString = request.Headers["Authorization"].ToString().Split(" ")[1];
-            JwtSecurityTokenHandler handler = new JwtSecurityTokenHandler();
-            JwtSecurityToken jsonToken = handler.ReadJwtToken(jwtString);
-            JObject jsonClaim = JObject.Parse(jsonToken.ToString().Split("}.")[1]);
-            return jsonClaim;
+            if (request == null ||
+                !AuthenticationHeaderValue.TryParse(request.Headers["Authorization"].ToString(), out AuthenticationHeaderValue header) ||
+                !string.Equals(header.Scheme, "Bearer", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(header.Parameter))
+                return null;
+
+            return header.Parameter.Trim();
+        }
+
+        private static bool TryValidateToken(
+            string token,
+            out System.Security.Claims.ClaimsPrincipal principal,
+            out JwtSecurityToken validatedToken)
+        {
+            principal = null;
+            validatedToken = null;
+
+            try
+            {
+                var tokenHandler = new JwtSecurityTokenHandler();
+                principal = tokenHandler.ValidateToken(token, new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Settings.Secret)),
+                    ValidateLifetime = true,
+                    ValidateIssuer = false,
+                    ValidateAudience = false,
+                    ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha256 },
+                    ClockSkew = TimeSpan.FromSeconds(30)
+                }, out SecurityToken securityToken);
+                validatedToken = securityToken as JwtSecurityToken;
+                return validatedToken != null;
+            }
+            catch (Exception exception) when (
+                exception is SecurityTokenException ||
+                exception is ArgumentException ||
+                exception is FormatException)
+            {
+                principal = null;
+                validatedToken = null;
+                return false;
+            }
+        }
+
+        private static JObject ToClaimsObject(JwtSecurityToken token)
+        {
+            string objectId = token.Claims.FirstOrDefault(claim => claim.Type == "objectId")?.Value;
+            string role = token.Claims.FirstOrDefault(claim => claim.Type == "role")?.Value
+                ?? token.Claims.FirstOrDefault(claim => claim.Type == ClaimTypes.Role)?.Value;
+
+            return new JObject
+            {
+                ["objectId"] = objectId,
+                ["_id"] = objectId,
+                ["nameCondominio"] = token.Claims.FirstOrDefault(claim => claim.Type == "nameCondominio")?.Value,
+                ["role"] = role,
+                ["jti"] = token.Claims.FirstOrDefault(claim => claim.Type == JwtRegisteredClaimNames.Jti)?.Value,
+                ["tokenPurpose"] = token.Claims.FirstOrDefault(claim => claim.Type == "tokenPurpose")?.Value
+            };
         }
         public string RemoverCaracterEspecial(string str)
         {
@@ -342,71 +435,82 @@ namespace condominio_api.Services
 
             return "";
         }
-        public void SendEmail(ConstrucaoEmail email)
+        public async Task<bool> SendEmailAsync(ConstrucaoEmail messageModel)
         {
-            string smtpUser = Settings.SmtpUser;
-            string smtpPassword = Settings.SmtpPassword;
-            if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPassword))
-                throw new InvalidOperationException("SMTP_USER e SMTP_PASSWORD devem estar configuradas.");
-
             try
             {
-                using (SmtpClient client = new SmtpClient("smtp.gmail.com", 587))
-                using (MailMessage message = new MailMessage(smtpUser, email.email))
+                string smtpUser = Settings.SmtpUser;
+                string smtpPassword = Settings.SmtpPassword;
+                if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPassword))
+                    throw new InvalidOperationException("SMTP_USER e SMTP_PASSWORD devem estar configuradas.");
+
+                using (SmtpClient client = new SmtpClient(Settings.SmtpHost, Settings.SmtpPort))
+                using (MailMessage message = new MailMessage(smtpUser, messageModel.email))
                 {
                     client.UseDefaultCredentials = false;
                     client.Credentials = new NetworkCredential(smtpUser, smtpPassword);
                     client.EnableSsl = true;
                     client.DeliveryMethod = SmtpDeliveryMethod.Network;
                     message.IsBodyHtml = true;
-                    message.Subject = email.titulo;
-                    message.Body = email.body;
-                    client.Send(message);
+                    message.Subject = messageModel.titulo;
+                    message.Body = messageModel.body;
+                    await client.SendMailAsync(message);
                 }
+                return true;
             }
-            catch (Exception e)
+            catch (Exception exception)
             {
-                Console.WriteLine("\n",
-                    e.ToString());
+                _logger.LogError(exception, "Falha no envio do e-mail transacional.");
+                return false;
             }
         }
-        public void EmailConfimacao(UserGenericLogin user)
-        {
-            string url = URL + "api/confirmacaoEmail";
-            ConstrucaoEmail email = new ConstrucaoEmail();
-            email.email = user.email;
-            email.titulo = "Confirmação de Email";
-            string image = "https://tse2.mm.bing.net/th?id=OIP.h3Eqt3wBHuM0tMbslVUcdwHaEo&pid=Api&P=0&w=300&h=300";
-            string htmlimage = "<img src=" + image + " />";
-            string html = string.Empty;
-            string link = "<p><a href='" + url + "?token=" + GenerateToken(user, _timeExpiredTokenEMAIL) + "/'>Confirme Seu Email</a></p>";
-            html = new StreamReader("C:\\Users\\Rodolfo\\git\\condominio_api\\Templates\\confirmed.html").ReadToEnd();
-            html = html.Replace("<image/>", htmlimage);
-            email.body = $"{html.Trim() + "\n" + link}";
-            SendEmail(email);
 
+        public async Task<bool> EmailConfimacaoAsync(UserGenericLogin user)
+        {
+            return await EnviarEmailComLinkAsync(
+                user,
+                "Confirmação de Email",
+                "api/confirmacaoEmail",
+                "email_confirmation",
+                "Confirme Seu Email");
         }
-        public void EmailDeRedefinicaoDeSenha(UserGenericLogin user)
+
+        public async Task<bool> EmailDeRedefinicaoDeSenhaAsync(UserGenericLogin user)
         {
-            string url = URL + "api/editarsenha";
+            return await EnviarEmailComLinkAsync(
+                user,
+                "Redefinição de Senha",
+                "api/recuperarSenhaCondominio",
+                "password_reset",
+                "Altere Sua Senha");
+        }
+
+        private async Task<bool> EnviarEmailComLinkAsync(
+            UserGenericLogin user,
+            string subject,
+            string endpoint,
+            string purpose,
+            string linkText)
+        {
+            string url = $"{Settings.AppBaseUrl.TrimEnd('/')}/{endpoint}";
             ConstrucaoEmail email = new ConstrucaoEmail();
             email.email = user.email;
-            email.titulo = "Redefinição de Senha";
+            email.titulo = subject;
             string image = "https://tse2.mm.bing.net/th?id=OIP.h3Eqt3wBHuM0tMbslVUcdwHaEo&pid=Api&P=0&w=300&h=300";
             string htmlimage = "<img src=" + image + " />";
-            string html = string.Empty;
-            string link = "<p><a href='" + url + "?token=" + GenerateToken(user, _timeExpiredTokenEMAIL) + "/'>Altere Sua Senha</a></p>";
-            html = new StreamReader("C:\\Users\\Rodolfo\\git\\condominio_api\\Templates\\confirmed.html").ReadToEnd();
+            string token = Uri.EscapeDataString(GenerateEmailToken(user, purpose));
+            string link = $"<p><a href='{url}?token={token}'>{linkText}</a></p>";
+            string templatePath = Path.Combine(AppContext.BaseDirectory, "Templates", "confirmed.html");
+            string html = await System.IO.File.ReadAllTextAsync(templatePath);
             html = html.Replace("<image/>", htmlimage);
             email.body = $"{html.Trim() + "\n" + link}";
-            SendEmail(email);
-
+            return await SendEmailAsync(email);
         }
         public UserAdm RetornaUserAdmPorId(string nameCondominio, string id)
         {
             IMongoDatabase _newDatabase = _clientMongoDb.GetDatabase(RemoverCaracterEspecial(nameCondominio));
             IMongoCollection<UserAdm> _users = _newDatabase.GetCollection<UserAdm>("usersAdm");
-            return _users.Find(_user => _user.id == id).ToList()[0];
+            return _users.Find(_user => _user.id == id).FirstOrDefault();
         }
         public BsonDocument GetBson(String nameDatabase, String nameitem, String nameCollection)
         {
