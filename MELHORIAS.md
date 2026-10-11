@@ -30,7 +30,7 @@
 | IMP-02 | Envio SMTP e leitura do template são assíncronos; falhas retornam erro operacional e ficam no log. |
 | IMP-03 | Links de e-mail usam APP_BASE_URL; o link de redefinição abre um formulário e envia a senha no corpo do POST. |
 | DEVOPS-02 | bin/, obj/ e publish/ são ignorados pelo Git. |
-| DEVOPS-03 | Workflow de build e auditoria NuGet adicionado; resultado remoto ainda pendente do push desta execução. |
+| DEVOPS-03 | Workflow de build e auditoria NuGet adicionado; CI 38174937833 passou em restore, build e auditoria sem vulnerabilidades ativas. |
 | DEVOPS-04 | .env.example documenta variáveis sem incluir credenciais reais. |
 | DOC-01 | README refeito com configuração, operação, ambientes Juno e conciliação. |
 | DOC-02 | SECURITY.md registra canal de reporte e invariantes de segurança. |
