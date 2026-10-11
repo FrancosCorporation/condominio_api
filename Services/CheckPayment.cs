@@ -16,6 +16,8 @@ namespace condominio_api.Services
         private Timer _timer;
         private readonly MongoClient _clientMongoDb;
         private readonly IPaymentService _paymentService;
+        private readonly TimeSpan _paymentCheckInterval;
+        private int _checkRunning;
         private string _baseUrl = "https://sandbox.boletobancario.com";
 
         public CheckPayment(ICondominioDatabaseSetting setting, IPaymentService paymentService)
@@ -23,23 +25,40 @@ namespace condominio_api.Services
             _paymentService = paymentService;
             var client = new MongoClient(setting.ConnectionString);
             _clientMongoDb = client;
+            _paymentCheckInterval = GetPaymentCheckInterval();
+        }
+
+        private static TimeSpan GetPaymentCheckInterval()
+        {
+            string configuredMinutes = Environment.GetEnvironmentVariable("PAYMENT_CHECK_MINUTES");
+            if (string.IsNullOrWhiteSpace(configuredMinutes))
+                return TimeSpan.FromMinutes(15);
+
+            if (!int.TryParse(configuredMinutes, out int minutes) || minutes < 15 || minutes > 1440)
+                throw new InvalidOperationException("PAYMENT_CHECK_MINUTES deve ser um inteiro entre 15 e 1440.");
+
+            return TimeSpan.FromMinutes(minutes);
         }
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
-            _timer = new Timer(consultCharges, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+            Console.WriteLine($"Conciliação de pagamentos configurada para {_paymentCheckInterval.TotalMinutes} minutos.");
+            _timer = new Timer(consultCharges, null, TimeSpan.Zero, _paymentCheckInterval);
             return Task.CompletedTask;
         }
 
-        public void changeIsPayment(IMongoDatabase mongoDatabase, bool isPayment)
+        public void changeIsPayment(IMongoDatabase mongoDatabase, UserAdm userAdm, bool isPayment)
         {
-            IMongoCollection<UserAdm> userAdmCollection = mongoDatabase.GetCollection<UserAdm>("usersAdm");
-            UserAdm userAdm = userAdmCollection.Find<UserAdm>(userAdm => true).ToList()[0];
+            if (userAdm == null || string.IsNullOrWhiteSpace(userAdm.id))
+                throw new ArgumentException("O administrador a atualizar precisa ter um id.", nameof(userAdm));
 
+            IMongoCollection<UserAdm> userAdmCollection = mongoDatabase.GetCollection<UserAdm>("usersAdm");
             var update = Builders<UserAdm>.Update.Set("isPayment", isPayment);
-            var result = userAdmCollection.UpdateOne(userAdm => true, update);
+            var result = userAdmCollection.UpdateOne(user => user.id == userAdm.id, update);
+            if (result.MatchedCount != 1)
+                throw new InvalidOperationException("O administrador da assinatura não foi encontrado para atualizar o pagamento.");
         }
-        public void insertHistoricoDocument(JunoCharge charge, IMongoDatabase mongoDatabase)
+        public void insertHistoricoDocument(JunoCharge charge, IMongoDatabase mongoDatabase, UserAdm userAdm)
         {
             IMongoCollection<JunoHistorico> historicoCollection = mongoDatabase.GetCollection<JunoHistorico>("historicoPagamento");
             DateTimeOffset dueDateCharge = new DateTimeOffset(new DateTime(int.Parse(charge.dueDate.Split("-")[0]), int.Parse(charge.dueDate.Split("-")[1]), int.Parse(charge.dueDate.Split("-")[2])));
@@ -59,9 +78,9 @@ namespace condominio_api.Services
                         };
                         historicoCollection.InsertOne(doc);
 
-                        changeIsPayment(mongoDatabase, true);
+                        changeIsPayment(mongoDatabase, userAdm, true);
                     } else {
-                        changeIsPayment(mongoDatabase, false);
+                        changeIsPayment(mongoDatabase, userAdm, false);
                     }
                 }
             } else {
@@ -74,33 +93,35 @@ namespace condominio_api.Services
                     status = charge.status,
                     };
                     historicoCollection.InsertOne(doc);
-                    changeIsPayment(mongoDatabase, true);
+                    changeIsPayment(mongoDatabase, userAdm, true);
                 } else {
-                    changeIsPayment(mongoDatabase, false);
+                    changeIsPayment(mongoDatabase, userAdm, false);
                 }
             }
         }
 
         public void consultCharges(Object state)
         {
-            dynamic _getAccessToken = _paymentService.getAccessToken();
-
-            var client = new RestClient($"{_baseUrl}/api-integration/charges");
-            var request = new RestRequest(Method.GET);
-            request.AddHeaders(new Dictionary<string, string>() {
-                {"Authorization", $"Bearer {_getAccessToken.access_token}"},
-                {"X-Api-Version", "2"},
-                {"X-Resource-Token", Settings.Token},
-                {"Content-Type", "application/json;charset=UTF-8"}
-            });
-
-            IRestResponse response = client.Execute(request);
-
-            JunoEmbedded _junoEmbedded = JsonConvert.DeserializeObject<JunoEmbedded>(response.Content);
-            JunoCharges _junoCharges = _junoEmbedded._embedded;
+            if (Interlocked.Exchange(ref _checkRunning, 1) == 1)
+                return;
 
             try
             {
+                dynamic _getAccessToken = _paymentService.getAccessToken();
+
+                var client = new RestClient($"{_baseUrl}/api-integration/charges");
+                var request = new RestRequest(Method.GET);
+                request.AddHeaders(new Dictionary<string, string>() {
+                    {"Authorization", $"Bearer {_getAccessToken.access_token}"},
+                    {"X-Api-Version", "2"},
+                    {"X-Resource-Token", Settings.Token},
+                    {"Content-Type", "application/json;charset=UTF-8"}
+                });
+
+                IRestResponse response = client.Execute(request);
+                JunoEmbedded _junoEmbedded = JsonConvert.DeserializeObject<JunoEmbedded>(response.Content);
+                JunoCharges _junoCharges = _junoEmbedded?._embedded;
+
                 IAsyncCursor<string> _listDatabaseNames = _clientMongoDb.ListDatabaseNames();
                 foreach (var databaseName in _listDatabaseNames.ToList())
                 {
@@ -112,13 +133,13 @@ namespace condominio_api.Services
 
                         if(userAdm.Count > 0 && _junoCharges != null)
                         {
-                            foreach(JunoCharge charge in _junoCharges.charges)
+                            foreach(UserAdm administrator in userAdm)
                             {
-                                if(charge.subscription != null)
+                                foreach(JunoCharge charge in _junoCharges.charges ?? new List<JunoCharge>())
                                 {
-                                    if(userAdm[0].idSubscription == charge.subscription.id)
+                                    if(charge.subscription != null && administrator.idSubscription == charge.subscription.id)
                                     {
-                                        insertHistoricoDocument(charge, mongoDatabase);
+                                        insertHistoricoDocument(charge, mongoDatabase, administrator);
                                     }
                                 }
                             }
@@ -126,15 +147,21 @@ namespace condominio_api.Services
                     }
                 }
             }
-            catch (System.TimeoutException)
+            catch (Exception ex)
             {
-                Console.Write("Empty Database\n");
+                Console.Error.WriteLine($"Falha na conciliação de pagamentos: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _checkRunning, 0);
             }
 
         }
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
+            _timer?.Change(Timeout.Infinite, Timeout.Infinite);
+            _timer?.Dispose();
             return Task.CompletedTask;
         }
 

@@ -56,6 +56,8 @@ namespace condominio_api.Models
     }
     public class UserGeneric
     {
+        public const string Bcrypt12Algorithm = "bcrypt12";
+
         [BsonId]
         [BsonRepresentation(BsonType.ObjectId)]
         public string id { get; set; }
@@ -63,6 +65,7 @@ namespace condominio_api.Models
         public string email { get; set; }
         [Required]
         public string password { get; set; }
+        public string alg { get; set; }
         public string role { get; set; }
         public byte[] image { get; set; }
         public BsonInt64 datacreate { get; set; }

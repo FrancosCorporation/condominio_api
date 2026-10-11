@@ -40,6 +40,7 @@ namespace condominio_api.Services
                     {"_id", ObjectId.GenerateNewId()},
                     {"email", user.email.ToLower()},
                     {"password", passwordToHash(password: user.password)},
+                    {"alg", UserGeneric.Bcrypt12Algorithm},
                     {"role", "Administrator"},
                     {"image", user.image},
                     {"datacreate", DateTimeOffset.Now.ToUnixTimeSeconds()},
@@ -94,6 +95,7 @@ namespace condominio_api.Services
                     {"_id", ObjectId.GenerateNewId()},
                     {"email", user.email.ToLower()},
                     {"password", passwordToHash(password: user.password)},
+                    {"alg", UserGeneric.Bcrypt12Algorithm},
                     {"nameCondominio", user.nameCondominio },
                     {"nome", user.nome.ToLower() },
                     {"image", user.image},
@@ -111,6 +113,7 @@ namespace condominio_api.Services
                     {"_id", ObjectId.GenerateNewId()},
                     {"email", user.email.ToLower()},
                     {"password", passwordToHash(password: user.password)},
+                    {"alg", UserGeneric.Bcrypt12Algorithm},
                     {"nome", user.nome.ToLower() },
                     {"bloco", user.bloco.ToLower() },
                     {"numeroapartamento", user.numeroapartamento.ToLower() },
@@ -158,18 +161,66 @@ namespace condominio_api.Services
         }
         public string passwordToHash(string password)
         {
-            using (SHA256 sHA256 = SHA256.Create())
+            if (string.IsNullOrEmpty(password))
+                throw new ArgumentException("A senha não pode ficar vazia.", nameof(password));
+
+            return BCrypt.Net.BCrypt.HashPassword(password, workFactor: 12);
+        }
+
+        public bool VerificarSenha<TUser>(IMongoCollection<TUser> users, TUser user, string password)
+            where TUser : UserGeneric
+        {
+            if (users == null || user == null || string.IsNullOrEmpty(password) || string.IsNullOrEmpty(user.password))
+                return false;
+
+            if (user.alg == UserGeneric.Bcrypt12Algorithm)
             {
-                byte[] passwordBytes = Encoding.ASCII.GetBytes(password);
-                byte[] passwordSha256Bytes = sHA256.ComputeHash(passwordBytes);
-                StringBuilder sbSHA256 = new StringBuilder();
-                for (int i = 0; i < passwordSha256Bytes.Length; i++)
+                try
                 {
-                    sbSHA256.Append(passwordSha256Bytes[i].ToString("X2"));
+                    return BCrypt.Net.BCrypt.Verify(password, user.password);
                 }
-                return sbSHA256.ToString();
+                catch (Exception)
+                {
+                    return false;
+                }
             }
 
+            // Registros anteriores não têm marcador e usam SHA-256 com ASCII.
+            if (!string.IsNullOrEmpty(user.alg) && user.alg != "sha256")
+                return false;
+
+            var legado = PasswordToLegacySha256(password);
+            var senhaCorreta = CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(user.password),
+                Encoding.UTF8.GetBytes(legado));
+            if (!senhaCorreta)
+                return false;
+
+            var novoHash = passwordToHash(password);
+            var resultado = users.UpdateOne(
+                candidato => candidato.id == user.id,
+                Builders<TUser>.Update
+                    .Set(candidato => candidato.password, novoHash)
+                    .Set(candidato => candidato.alg, UserGeneric.Bcrypt12Algorithm));
+
+            if (resultado.MatchedCount != 1)
+                return false;
+
+            user.password = novoHash;
+            user.alg = UserGeneric.Bcrypt12Algorithm;
+            return true;
+        }
+
+        private static string PasswordToLegacySha256(string password)
+        {
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                byte[] hash = sha256.ComputeHash(Encoding.ASCII.GetBytes(password));
+                StringBuilder resultado = new StringBuilder();
+                for (int i = 0; i < hash.Length; i++)
+                    resultado.Append(hash[i].ToString("X2"));
+                return resultado.ToString();
+            }
         }
         public string GenerateToken(UserGenericLogin user, double horas)
         {
@@ -293,22 +344,25 @@ namespace condominio_api.Services
         }
         public void SendEmail(ConstrucaoEmail email)
         {
-            SmtpClient client = new SmtpClient("smtp.gmail.com", 587);
-            client.Credentials = new NetworkCredential("seunegocioonlineagr@gmail.com", "35141543Rd");
-            client.UseDefaultCredentials = false;
-            client.EnableSsl = true;
-            client.DeliveryMethod = SmtpDeliveryMethod.Network;
+            string smtpUser = Settings.SmtpUser;
+            string smtpPassword = Settings.SmtpPassword;
+            if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPassword))
+                throw new InvalidOperationException("SMTP_USER e SMTP_PASSWORD devem estar configuradas.");
 
-
-            string to = email.email;
-            string from = "noreply@noreply.com";
-            MailMessage message = new MailMessage(from, to);
-            message.IsBodyHtml = true;
-            message.Subject = email.titulo;
-            message.Body = email.body;
             try
             {
-                client.Send(message);
+                using (SmtpClient client = new SmtpClient("smtp.gmail.com", 587))
+                using (MailMessage message = new MailMessage(smtpUser, email.email))
+                {
+                    client.UseDefaultCredentials = false;
+                    client.Credentials = new NetworkCredential(smtpUser, smtpPassword);
+                    client.EnableSsl = true;
+                    client.DeliveryMethod = SmtpDeliveryMethod.Network;
+                    message.IsBodyHtml = true;
+                    message.Subject = email.titulo;
+                    message.Body = email.body;
+                    client.Send(message);
+                }
             }
             catch (Exception e)
             {

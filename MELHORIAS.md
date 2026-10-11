@@ -96,13 +96,13 @@ O item 1 é P0 de vazamento; os itens 2 e 3 são os P0 de dinheiro.
 - **Arquivo:** `Services/User.cs:297`
 - **Evidência:**
   ```csharp
-  client.Credentials = new NetworkCredential("seunegocioonlineagr@gmail.com", "35141543Rd");
+  client.Credentials = new NetworkCredential(Settings.SmtpUser, Settings.SmtpPassword);
   ```
-  Literal **ativo** no caminho de envio (`SendEmail`, linhas 293-313), e o arquivo está no índice:
+  A credencial literal foi removida do caminho de envio, que agora lê `SMTP_USER` e `SMTP_PASSWORD`; o arquivo continua no histórico do repositório:
   `git ls-files Services/User.cs` → `Services/User.cs`. O método é chamado por `EmailConfimacao`
   (linha 315) e pelo reset de senha (linha ~344), ou seja, toda confirmação de e-mail usa essa
   credencial embutida.
-- **Impacto:** conta de Gmail **com senha escrita no GitHub público**
+- **Impacto:** conta de Gmail cuja senha já foi exposta no repositório público e continua no histórico Git
   (`github.com/FrancosCorporation/condominio_api`). Quem lê o repositório pode enviar e-mail como a
   empresa e, dependendo das permissões da conta, ler/modificar mensagens — inclusive interceptar
   os tokens de confirmação de e-mail que o **próprio sistema** envia (`BUG-03`). Se for senha de app
@@ -745,3 +745,10 @@ dotnet build --warnaserror && dotnet test && dotnet list package --vulnerable
 
 *Fim do plano. Gerado por leitura direta do código em 2026-10-02. Nenhum item já estava corrigido*
 *— todos apontam para defeitos ainda presentes.*
+
+
+## Registro de execução — 2026-10-11
+
+- Aplicadas no código as mudanças de `SEC-01` (credenciais por ambiente), `SEC-02` (intervalo mínimo de 15 minutos, configurável, e trava contra ciclos concorrentes), `SEC-03` (atualização pelo id do administrador correspondente) e `SEC-04` (bcrypt com custo 12 e migração do SHA-256 no login).
+- Os itens continuam desmarcados até execução das verificações e commit, conforme o procedimento deste plano. `SEC-01` também depende de trocar a senha SMTP e remover o valor do histórico Git; essas ações não foram feitas nesta sessão.
+- Não foram executados testes nem builds.

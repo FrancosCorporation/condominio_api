@@ -104,15 +104,15 @@ namespace condominio_api.Services
                 IMongoCollection<UserReferencia> _users2 = _newDatabase.GetCollection<UserReferencia>("users");
                 UserReferencia userref = _users2.Find(userref => userref.email == user.email).ToList()[0];
 
-                //password para hash
-                string _passwordSHA256 = _userService.passwordToHash(user.password);
                 _newDatabase = _clientMongoDb.GetDatabase(userref.databaseName);
 
 
                 if (userref.role == "Administrator")
                 {
                     IMongoCollection<UserAdm> _users = _newDatabase.GetCollection<UserAdm>("usersAdm");
-                    UserAdm _user = _users.Find(_user => _user.email == user.email & _user.password == _passwordSHA256).ToList()[0];
+                    UserAdm _user = _users.Find(_user => _user.email == user.email).FirstOrDefault();
+                    if (!_userService.VerificarSenha(_users, _user, user.password))
+                        return Unauthorized();
                     string _tokenUser = _userService.GenerateToken(_user, _timeExpiredTokenLogin);
                     return Ok(new { token = _tokenUser });
                 }
@@ -121,7 +121,9 @@ namespace condominio_api.Services
                     if (_userService.verificaPagamento(userref.nameCondominio))
                     {
                         IMongoCollection<UserPorteiro> _users = _newDatabase.GetCollection<UserPorteiro>("usersPorteiros");
-                        UserPorteiro _user = _users.Find(_user => _user.email == user.email & _user.password == _passwordSHA256).ToList()[0];
+                        UserPorteiro _user = _users.Find(_user => _user.email == user.email).FirstOrDefault();
+                        if (!_userService.VerificarSenha(_users, _user, user.password))
+                            return Unauthorized();
                         string _tokenUser = _userService.GenerateToken(_user, _timeExpiredTokenLogin);
                         return Ok(new { token = _tokenUser });
                     }
@@ -147,12 +149,12 @@ namespace condominio_api.Services
                 {
                     if (_userService.verificaPagamento(user.nameCondominio))
                     {
-                        //password para hash
-                        string _passwordSHA256 = _userService.passwordToHash(user.password);
                         IMongoDatabase _newDatabase = _clientMongoDb.GetDatabase(_userService.RemoverCaracterEspecial(user.nameCondominio));
 
                         IMongoCollection<UserMorador> _users = _newDatabase.GetCollection<UserMorador>("usersMoradores");
-                        UserMorador _user = _users.Find(_user => _user.email == user.email & _user.password == _passwordSHA256).ToList()[0];
+                        UserMorador _user = _users.Find(_user => _user.email == user.email).FirstOrDefault();
+                        if (!_userService.VerificarSenha(_users, _user, user.password))
+                            return Unauthorized();
                         string _tokenUser = _userService.GenerateToken(_user, _timeExpiredTokenLogin);
                         return Ok(new { token = _tokenUser });
                     }
@@ -474,6 +476,7 @@ namespace condominio_api.Services
                     BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
                     BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
                     novo["password"] = _passwordSHA256;
+                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
                     //pego a colection                         faço a alteração
                     db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
                     return Ok("Senha Alterada");
@@ -485,6 +488,7 @@ namespace condominio_api.Services
                     BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
                     BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
                     novo["password"] = _passwordSHA256;
+                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
                     //pego a colection                         faço a alteração
                     db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
                     return Ok("Senha Alterada");
@@ -495,6 +499,7 @@ namespace condominio_api.Services
                     BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
                     BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
                     novo["password"] = _passwordSHA256;
+                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
                     //pego a colection                         faço a alteração
                     db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
                     return Ok("Senha Alterada");
@@ -528,6 +533,7 @@ namespace condominio_api.Services
                     BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
                     BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
                     novo["password"] = _passwordSHA256;
+                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
                     //pego a colection                         faço a alteração
                     db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
                     return Ok("Senha Alterada");
@@ -539,6 +545,7 @@ namespace condominio_api.Services
                     BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
                     BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
                     novo["password"] = _passwordSHA256;
+                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
                     //pego a colection                         faço a alteração
                     db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
                     return Ok("Senha Alterada");
@@ -549,6 +556,7 @@ namespace condominio_api.Services
                     BsonDocument old = _userService.GetBson(nameCondominio, id, nameCollection);
                     BsonDocument novo = _userService.GetBson(nameCondominio, id, nameCollection);
                     novo["password"] = _passwordSHA256;
+                    novo["alg"] = UserGeneric.Bcrypt12Algorithm;
                     //pego a colection                         faço a alteração
                     db.GetCollection<BsonDocument>(nameCollection).ReplaceOne(old, novo);
                     return Ok("Senha Alterada");

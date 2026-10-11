@@ -11,6 +11,8 @@ namespace condominio_api
     ///   JUNO_RESOURCE_TOKEN     -> Settings.Token
     ///   JUNO_AUTHORIZATION      -> Settings.Authorization
     ///   JUNO_PLAN_ID            -> Settings.PlanId
+    ///   SMTP_USER               -> Settings.SmtpUser
+    ///   SMTP_PASSWORD           -> Settings.SmtpPassword
     /// </summary>
     public static class Settings
     {
@@ -28,5 +30,11 @@ namespace condominio_api
 
         public static string PlanId =>
             Environment.GetEnvironmentVariable("JUNO_PLAN_ID") ?? string.Empty;
+
+        public static string SmtpUser =>
+            Environment.GetEnvironmentVariable("SMTP_USER") ?? string.Empty;
+
+        public static string SmtpPassword =>
+            Environment.GetEnvironmentVariable("SMTP_PASSWORD") ?? string.Empty;
     }
 }

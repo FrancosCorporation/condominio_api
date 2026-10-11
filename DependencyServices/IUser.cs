@@ -15,6 +15,8 @@ namespace condominio_api.DependencyService
         BsonDocument RetornaUserMorador(UserMorador user);
         Boolean EmailExist(UserGenericLogin user, IMongoClient database);
         string passwordToHash(string password);
+        bool VerificarSenha<TUser>(IMongoCollection<TUser> users, TUser user, string password)
+            where TUser : UserGeneric;
         string GenerateToken(UserGenericLogin user, double horas);
         Boolean ValidateToken(HttpRequest request);
         JObject UnGenereteToken(HttpRequest request);
